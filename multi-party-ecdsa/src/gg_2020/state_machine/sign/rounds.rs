@@ -707,12 +707,12 @@ impl Round6 {
 #[derive(Serialize, Deserialize, Clone)]
 #[allow(dead_code)]
 pub struct CompletedOfflineStage {
-    i: u16,
-    local_key: LocalKey<Secp256k1>,
-    sign_keys: SignKeys,
-    t_vec: Vec<Point<Secp256k1>>,
-    R: Point<Secp256k1>,
-    sigma_i: Scalar<Secp256k1>,
+    pub i: u16,
+    pub local_key: LocalKey<Secp256k1>,
+    pub sign_keys: SignKeys,
+    pub t_vec: Vec<Point<Secp256k1>>,
+    pub R: Point<Secp256k1>,
+    pub sigma_i: Scalar<Secp256k1>,
 }
 
 impl CompletedOfflineStage {
@@ -722,7 +722,7 @@ impl CompletedOfflineStage {
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
-pub struct PartialSignature(Scalar<Secp256k1>);
+pub struct PartialSignature(pub Scalar<Secp256k1>);
 
 #[derive(Clone)]
 pub struct Round7 {
