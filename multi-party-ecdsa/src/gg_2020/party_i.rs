@@ -1012,6 +1012,16 @@ impl LocalSignature {
         }
     }
 
+    pub fn add_partial_signatures(&self, s_vec: &[Scalar<Secp256k1>]) -> Self {
+        Self {
+            r: self.r.clone(),
+            R: self.R.clone(),
+            s_i: s_vec.iter().fold(self.s_i.clone(), |acc, x| acc + x),
+            m: self.m.clone(),
+            y: self.y.clone(),
+        }
+    }
+    
     pub fn output_signature(
         &self,
         s_vec: &[Scalar<Secp256k1>],
