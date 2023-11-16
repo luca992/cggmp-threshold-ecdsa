@@ -2,30 +2,22 @@
 
 use std::{convert::TryFrom, iter};
 
-use serde::{Deserialize, Serialize};
-use thiserror::Error;
-
-use curv::{
-    elliptic::curves::{secp256_k1::Secp256k1, Point, Scalar},
-    BigInt,
-};
-use sha2::Sha256;
-
-use round_based::{
-    containers::{self, push::Push, BroadcastMsgs, P2PMsgs, Store},
-    Msg,
-};
-
-use crate::utilities::mta::{MessageA, MessageB};
-
-use crate::{
-    protocols::multi_party_ecdsa::gg_2020 as gg20,
-    utilities::zk_pdl_with_slack::PDLwSlackProof,
-};
 use curv::cryptographic_primitives::proofs::{
     sigma_correct_homomorphic_elgamal_enc::HomoELGamalProof,
     sigma_valid_pedersen::PedersenProof,
 };
+use curv::{
+    elliptic::curves::{secp256_k1::Secp256k1, Point, Scalar},
+    BigInt,
+};
+use round_based::{
+    containers::{self, push::Push, BroadcastMsgs, P2PMsgs, Store},
+    Msg,
+};
+use serde::{Deserialize, Serialize};
+use sha2::Sha256;
+use thiserror::Error;
+
 use gg20::{
     party_i::{
         LocalSignature, SignBroadcastPhase1, SignDecommitPhase1, SignKeys,
@@ -35,25 +27,39 @@ use gg20::{
     ErrorType,
 };
 
+use crate::utilities::mta::{MessageA, MessageB};
+use crate::{
+    protocols::multi_party_ecdsa::gg_2020 as gg20,
+    utilities::zk_pdl_with_slack::PDLwSlackProof,
+};
+
 type Result<T, E = Error> = std::result::Result<T, E>;
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
 #[allow(clippy::upper_case_acronyms)]
 pub struct GWI(pub Point<Secp256k1>);
+
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct GammaI(pub MessageB);
+
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct WI(pub MessageB);
+
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct DeltaI(Scalar<Secp256k1>);
+
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct TI(pub Point<Secp256k1>);
+
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct TIProof(pub PedersenProof<Secp256k1, Sha256>);
+
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct RDash(Point<Secp256k1>);
+
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct SI(pub Point<Secp256k1>);
+
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct HEGProof(pub HomoELGamalProof<Secp256k1, Sha256>);
 
@@ -628,7 +634,7 @@ impl Round5 {
             S_i,
             homo_elgamal_proof,
             s_l: self.s_l,
-            protocol_output: CompletedOfflineStage {
+            protocol_output: CompletedOfflineStageFull {
                 i: self.i,
                 local_key: self.local_key,
                 sign_keys: self.sign_keys,
@@ -656,14 +662,14 @@ pub struct Round6 {
     homo_elgamal_proof: HomoELGamalProof<Secp256k1, Sha256>,
     s_l: Vec<u16>,
     /// Round 6 guards protocol output until final checks are taken the place
-    protocol_output: CompletedOfflineStage,
+    protocol_output: CompletedOfflineStageFull,
 }
 
 impl Round6 {
     pub fn proceed(
         self,
         input: BroadcastMsgs<(SI, HEGProof)>,
-    ) -> Result<CompletedOfflineStage, Error> {
+    ) -> Result<CompletedOfflineStageFull, Error> {
         let (S_i_vec, hegp_vec): (Vec<_>, Vec<_>) = input
             .into_vec_including_me((
                 SI(self.S_i),
@@ -705,8 +711,19 @@ impl Round6 {
 }
 
 #[derive(Serialize, Deserialize, Clone)]
+#[serde(untagged)]
+pub enum CompletedOfflineStage {
+    Full(CompletedOfflineStageFull),
+    Minimal(CompletedOfflineStageMinimal),
+}
+
+pub trait CompletedOfflineStagePublicKey {
+    fn public_key(&self) -> &Point<Secp256k1>;
+}
+
+#[derive(Serialize, Deserialize, Clone)]
 #[allow(dead_code)]
-pub struct CompletedOfflineStage {
+pub struct CompletedOfflineStageFull {
     pub i: u16,
     pub local_key: LocalKey<Secp256k1>,
     pub sign_keys: SignKeys,
@@ -715,9 +732,33 @@ pub struct CompletedOfflineStage {
     pub sigma_i: Scalar<Secp256k1>,
 }
 
-impl CompletedOfflineStage {
-    pub fn public_key(&self) -> &Point<Secp256k1> {
+#[derive(Serialize, Deserialize, Clone)]
+#[allow(dead_code)]
+pub struct CompletedOfflineStageMinimal {
+    pub k_i: Scalar<Secp256k1>,
+    pub R: Point<Secp256k1>,
+    pub sigma_i: Scalar<Secp256k1>,
+    pub pubkey: Point<Secp256k1>,
+}
+
+impl CompletedOfflineStagePublicKey for CompletedOfflineStage {
+    fn public_key(&self) -> &Point<Secp256k1> {
+        match self {
+            CompletedOfflineStage::Full(full) => full.public_key(),
+            CompletedOfflineStage::Minimal(minimal) => minimal.public_key(),
+        }
+    }
+}
+
+impl CompletedOfflineStagePublicKey for CompletedOfflineStageFull {
+    fn public_key(&self) -> &Point<Secp256k1> {
         &self.local_key.y_sum_s
+    }
+}
+
+impl CompletedOfflineStagePublicKey for CompletedOfflineStageMinimal {
+    fn public_key(&self) -> &Point<Secp256k1> {
+        &self.pubkey
     }
 }
 
@@ -734,13 +775,26 @@ impl Round7 {
         message: &BigInt,
         completed_offline_stage: CompletedOfflineStage,
     ) -> Result<(Self, PartialSignature)> {
-        let local_signature = LocalSignature::phase7_local_sig(
-            &completed_offline_stage.sign_keys.k_i,
-            message,
-            &completed_offline_stage.R,
-            &completed_offline_stage.sigma_i,
-            &completed_offline_stage.local_key.y_sum_s,
-        );
+        let local_signature = match completed_offline_stage {
+            CompletedOfflineStage::Full(full) => {
+                LocalSignature::phase7_local_sig(
+                    &full.sign_keys.k_i,
+                    message,
+                    &full.R,
+                    &full.sigma_i,
+                    &full.local_key.y_sum_s,
+                )
+            }
+            CompletedOfflineStage::Minimal(minimal) => {
+                LocalSignature::phase7_local_sig(
+                    &minimal.k_i,
+                    message,
+                    &minimal.R,
+                    &minimal.sigma_i,
+                    &minimal.pubkey,
+                )
+            }
+        };
         let partial = PartialSignature(local_signature.s_i.clone());
         Ok((Self { local_signature }, partial))
     }
@@ -750,7 +804,8 @@ impl Round7 {
         sigs: &[PartialSignature],
     ) -> Result<(Self, PartialSignature)> {
         let sigs = sigs.iter().map(|s_i| s_i.0.clone()).collect::<Vec<_>>();
-        let local_signature = self.local_signature.add_partial_signatures(&sigs);
+        let local_signature =
+            self.local_signature.add_partial_signatures(&sigs);
         let partial = PartialSignature(local_signature.s_i.clone());
         Ok((Self { local_signature }, partial))
     }

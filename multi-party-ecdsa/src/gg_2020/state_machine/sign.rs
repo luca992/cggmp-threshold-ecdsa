@@ -296,7 +296,7 @@ impl OfflineStage {
 impl StateMachine for OfflineStage {
     type MessageBody = OfflineProtocolMessage;
     type Err = Error;
-    type Output = CompletedOfflineStage;
+    type Output = CompletedOfflineStageFull;
 
     fn handle_incoming(
         &mut self,
@@ -525,7 +525,7 @@ enum OfflineR {
     R4(Round4),
     R5(Round5),
     R6(Round6),
-    Finished(CompletedOfflineStage),
+    Finished(CompletedOfflineStageFull),
     Gone,
 }
 
@@ -708,7 +708,10 @@ impl SignManual {
 
     /// `sigs` must not include partial signature produced by local party (only partial signatures produced
     /// by other parties)
-    pub fn add(self, sigs: &[PartialSignature]) -> Result<(Self, PartialSignature), SignError> {
+    pub fn add(
+        self,
+        sigs: &[PartialSignature],
+    ) -> Result<(Self, PartialSignature), SignError> {
         self.state
             .proceed_manual_append(sigs)
             .map(|(state, m)| (Self { state }, m))
@@ -771,6 +774,9 @@ mod test {
         println!("{:#?}", simulation.benchmark_results().unwrap());
 
         stages
+            .into_iter()
+            .map(|s| CompletedOfflineStage::Full(s))
+            .collect()
     }
 
     fn simulate_signing(offline: Vec<CompletedOfflineStage>, message: &[u8]) {

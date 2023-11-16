@@ -1021,7 +1021,7 @@ impl LocalSignature {
             y: self.y.clone(),
         }
     }
-    
+
     pub fn output_signature(
         &self,
         s_vec: &[Scalar<Secp256k1>],
