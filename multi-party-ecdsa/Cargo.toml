@@ -46,7 +46,7 @@ derivative = "2.2.0"
 log = "0.4.17"
 merlin = "3.0.0"
 serde_repr = "0.1.16"
-serde_with = "3.3.0"
+serde_with = { version = "3.3.0", features = ["macros"], default-features = false }
 subtle = { version = "2" }
 
 [dev-dependencies]
