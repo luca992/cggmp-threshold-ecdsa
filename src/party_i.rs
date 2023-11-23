@@ -41,7 +41,9 @@ use paillier::{
 };
 
 use serde::{Deserialize, Serialize};
-use zk_paillier::zkproofs::{DLogStatement, NiCorrectKeyProof};
+use zk_paillier::zkproofs::{
+    CompositeDLogProof, DLogStatement, NiCorrectKeyProof,
+};
 
 use crate::ErrorType;
 use curv::cryptographic_primitives::proofs::sigma_valid_pedersen::PedersenProof;
@@ -56,10 +58,6 @@ pub use crate::mpc_ecdsa::{
     utilities::zk_pdl_with_slack::{
         PDLwSlackProof, PDLwSlackStatement, PDLwSlackWitness,
     },
-};
-use multi_party_ecdsa::gg_2020::party_i::generate_h1_h2_N_tilde;
-use multi_party_ecdsa::utilities::zk_composite_dlog::{
-    CompositeDLogProof, CompositeDLogStatement, CompositeDLogWitness,
 };
 
 const SECURITY: usize = 256;
@@ -79,7 +77,6 @@ pub struct Keys<E: Curve = Secp256k1> {
     pub h2: BigInt,
     pub xhi: BigInt,
     pub xhi_inv: BigInt,
-    pub phi: BigInt,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -131,12 +128,33 @@ pub struct SignatureRecid {
 }
 */
 
+pub fn generate_h1_h2_N_tilde() -> (BigInt, BigInt, BigInt, BigInt, BigInt) {
+    // note, should be safe primes:
+    // let (ek_tilde, dk_tilde) = Paillier::keypair_safe_primes().keys();;
+    let (ek_tilde, dk_tilde) = Paillier::keypair().keys();
+    let one = BigInt::one();
+    let phi = (&dk_tilde.p - &one) * (&dk_tilde.q - &one);
+    let h1 = BigInt::sample_below(&ek_tilde.n);
+    let (mut xhi, mut xhi_inv) = loop {
+        let xhi_ = BigInt::sample_below(&phi);
+        match BigInt::mod_inv(&xhi_, &phi) {
+            Some(inv) => break (xhi_, inv),
+            None => continue,
+        }
+    };
+    let h2 = BigInt::mod_pow(&h1, &xhi, &ek_tilde.n);
+    xhi = BigInt::sub(&phi, &xhi);
+    xhi_inv = BigInt::sub(&phi, &xhi_inv);
+
+    (ek_tilde.n, h1, h2, xhi, xhi_inv)
+}
+
 impl Keys {
     pub fn create(index: usize) -> Self {
         let u = Scalar::<Secp256k1>::random();
         let y = Point::generator() * &u;
         let (ek, dk) = Paillier::keypair().keys();
-        let (N_tilde, h1, h2, xhi, xhi_inv, phi) = generate_h1_h2_N_tilde();
+        let (N_tilde, h1, h2, xhi, xhi_inv) = generate_h1_h2_N_tilde();
 
         Self {
             u_i: u,
@@ -149,7 +167,6 @@ impl Keys {
             h2,
             xhi,
             xhi_inv,
-            phi,
         }
     }
 
@@ -159,7 +176,7 @@ impl Keys {
         let y = Point::generator() * &u;
 
         let (ek, dk) = Paillier::keypair_safe_primes().keys();
-        let (N_tilde, h1, h2, xhi, xhi_inv, phi) = generate_h1_h2_N_tilde();
+        let (N_tilde, h1, h2, xhi, xhi_inv) = generate_h1_h2_N_tilde();
 
         Self {
             u_i: u,
@@ -172,13 +189,12 @@ impl Keys {
             h2,
             xhi,
             xhi_inv,
-            phi,
         }
     }
     pub fn create_from(u: Scalar<Secp256k1>, index: usize) -> Self {
         let y = Point::generator() * &u;
         let (ek, dk) = Paillier::keypair().keys();
-        let (N_tilde, h1, h2, xhi, xhi_inv, phi) = generate_h1_h2_N_tilde();
+        let (N_tilde, h1, h2, xhi, xhi_inv) = generate_h1_h2_N_tilde();
 
         Self {
             u_i: u,
@@ -191,52 +207,30 @@ impl Keys {
             h2,
             xhi,
             xhi_inv,
-            phi,
         }
     }
 
     pub fn phase1_broadcast_phase3_proof_of_correct_key_proof_of_correct_h1h2(
         &self,
-    ) -> Result<(KeyGenBroadcastMessage1, KeyGenDecommitMessage1), ErrorType>
-    {
+    ) -> (KeyGenBroadcastMessage1, KeyGenDecommitMessage1) {
         let blind_factor = BigInt::sample(SECURITY);
         let correct_key_proof = NiCorrectKeyProof::proof(&self.dk, None);
 
-        let dlog_statement_base_h1 = CompositeDLogStatement {
-            modulus: self.N_tilde.clone(),
-            base: self.h1.clone(),
-            value: self.h2.clone(),
+        let dlog_statement_base_h1 = DLogStatement {
+            N: self.N_tilde.clone(),
+            g: self.h1.clone(),
+            ni: self.h2.clone(),
         };
-        let dlog_witness_base_h1 = CompositeDLogWitness {
-            exponent: self.xhi.clone(),
-            totient: self.phi.clone(),
-        };
-
-        let dlog_statement_base_h2 = CompositeDLogStatement {
-            modulus: self.N_tilde.clone(),
-            base: self.h2.clone(),
-            value: self.h1.clone(),
-        };
-        let dlog_witness_base_h2 = CompositeDLogWitness {
-            exponent: self.xhi_inv.clone(),
-            totient: self.phi.clone(),
+        let dlog_statement_base_h2 = DLogStatement {
+            N: self.N_tilde.clone(),
+            g: self.h2.clone(),
+            ni: self.h1.clone(),
         };
 
-        let dlog_proof_error = ErrorType {
-            error_type: "Composite DLog Proof Generation Failed".to_string(),
-            bad_actors: vec![],
-            data: vec![],
-        };
-        let composite_dlog_proof_base_h1 = CompositeDLogProof::prove(
-            &dlog_statement_base_h1,
-            &dlog_witness_base_h1,
-        )
-        .map_err(|_| dlog_proof_error.clone())?;
-        let composite_dlog_proof_base_h2 = CompositeDLogProof::prove(
-            &dlog_statement_base_h2,
-            &dlog_witness_base_h2,
-        )
-        .map_err(|_| dlog_proof_error)?;
+        let composite_dlog_proof_base_h1 =
+            CompositeDLogProof::prove(&dlog_statement_base_h1, &self.xhi);
+        let composite_dlog_proof_base_h2 =
+            CompositeDLogProof::prove(&dlog_statement_base_h2, &self.xhi_inv);
 
         let com = HashCommitment::<Sha256>::create_commitment_with_user_defined_randomness(
 			&BigInt::from_bytes(self.y_i.to_bytes(true).as_ref()),
@@ -254,7 +248,7 @@ impl Keys {
             blind_factor,
             y_i: self.y_i.clone(),
         };
-        Ok((bcm1, decom1))
+        (bcm1, decom1)
     }
 
     #[allow(clippy::type_complexity)]
@@ -279,11 +273,10 @@ impl Keys {
         // decommitments
         let correct_key_correct_decom_all = (0..bc1_vec.len())
             .map(|i| {
-                let dlog_statement_base_h2 = CompositeDLogStatement {
-                    modulus: bc1_vec[i].dlog_statement.modulus.clone(),
-                    // Base and value are swapped because we're using h1's statement.
-                    base: bc1_vec[i].dlog_statement.value.clone(),
-                    value: bc1_vec[i].dlog_statement.base.clone(),
+                let dlog_statement_base_h2 = DLogStatement {
+                    N: bc1_vec[i].dlog_statement.N.clone(),
+                    g: bc1_vec[i].dlog_statement.ni.clone(),
+                    ni: bc1_vec[i].dlog_statement.g.clone(),
                 };
                 let test_res =
 					HashCommitment::<Sha256>::create_commitment_with_user_defined_randomness(
@@ -294,8 +287,8 @@ impl Keys {
 						.verify(&bc1_vec[i].e, zk_paillier::zkproofs::SALT_STRING)
 						.is_ok() && bc1_vec[i].e.n.bit_length() >= PAILLIER_MIN_BIT_LENGTH &&
 						bc1_vec[i].e.n.bit_length() <= PAILLIER_MAX_BIT_LENGTH &&
-						bc1_vec[i].dlog_statement.modulus.bit_length() >= PAILLIER_MIN_BIT_LENGTH &&
-						bc1_vec[i].dlog_statement.modulus.bit_length() <= PAILLIER_MAX_BIT_LENGTH &&
+						bc1_vec[i].dlog_statement.N.bit_length() >= PAILLIER_MIN_BIT_LENGTH &&
+						bc1_vec[i].dlog_statement.N.bit_length() <= PAILLIER_MAX_BIT_LENGTH &&
 						bc1_vec[i]
 							.composite_dlog_proof_base_h1
 							.verify(&bc1_vec[i].dlog_statement)
@@ -487,7 +480,7 @@ impl PartyPrivate {
         let y = Point::generator() * &u;
         let (ek, dk) = Paillier::keypair().keys();
 
-        let (N_tilde, h1, h2, xhi, xhi_inv, phi) = generate_h1_h2_N_tilde();
+        let (N_tilde, h1, h2, xhi, xhi_inv) = generate_h1_h2_N_tilde();
 
         Keys {
             u_i: u,
@@ -500,7 +493,6 @@ impl PartyPrivate {
             h2,
             xhi,
             xhi_inv,
-            phi,
         }
     }
 
@@ -514,7 +506,7 @@ impl PartyPrivate {
         let y = Point::generator() * &u;
         let (ek, dk) = Paillier::keypair_safe_primes().keys();
 
-        let (N_tilde, h1, h2, xhi, xhi_inv, phi) = generate_h1_h2_N_tilde();
+        let (N_tilde, h1, h2, xhi, xhi_inv) = generate_h1_h2_N_tilde();
 
         Keys {
             u_i: u,
@@ -527,7 +519,6 @@ impl PartyPrivate {
             h2,
             xhi,
             xhi_inv,
-            phi,
         }
     }
 
